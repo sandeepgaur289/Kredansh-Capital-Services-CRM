@@ -1,0 +1,15 @@
+KREDANSH CAPITAL ERP V4.1 - EMBEDDED LOGO FIX
+
+This build embeds the official Kredansh Capital Services logo directly inside
+templates/base.html, so the logo does not depend on a /static/logo.png request.
+
+It also:
+- shows the logo in the sidebar on every page,
+- shows the logo in the top header on every page,
+- uses the logo as the browser favicon,
+- removes User Management and Logout from the temporary no-login development UI,
+- keeps physical logo.png files for future reports/PWA/print work.
+
+FASTEST DEPLOYMENT:
+Replace GitHub file templates/base.html with the supplied base.html and commit.
+Railway auto-deploys. Hard refresh with Ctrl+Shift+R after deployment.
