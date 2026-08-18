@@ -1,0 +1,20 @@
+KREDANSH CAPITAL ONLINE V2 - POSTGRES STABLE
+
+This build fixes the main SQLite-to-Supabase/PostgreSQL compatibility issues:
+- Dashboard DATE comparison crash fixed.
+- Blank HTML date values are saved as NULL instead of empty text.
+- Excel date cells are normalized before PostgreSQL inserts/updates.
+- Collection payment/PTP/visit dates are PostgreSQL-safe.
+- Bank/employee/collection compatibility columns are added safely.
+- Health endpoints expose a build marker for deployment verification.
+
+Build marker:
+KREDANSH_POSTGRES_STABLE_V2_2026_08_18
+
+After deployment test:
+1) /healthz
+2) Login
+3) Dashboard
+4) Collection open/edit/save
+5) Enforcement open/edit/save
+6) Excel import

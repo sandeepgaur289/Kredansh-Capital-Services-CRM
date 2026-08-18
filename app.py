@@ -19,6 +19,54 @@ if os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('CLOUD_MODE','').lowe
 COLLECTION_STATUSES=['Pending','Contacted','PTP','Broken PTP','Part Paid','Paid','Legal','Skip','Not Traceable','Closed']
 ENFORCEMENT_STATUSES=['Pending Status','DM Order Pending','DM Order Available','Chaspa Affixed','Possession Scheduled','Rescheduled','Second Attempt','Possession Done','Settled','Regularized','Hold by Bank','Cancelled']
 ROLES=['Admin','Manager','Recovery Officer','Data Entry','Viewer']
+APP_BUILD='KREDANSH_NO_LOGIN_DEV_V3_2026_08_18'
+DEV_NO_LOGIN=True
+
+@app.before_request
+def development_identity():
+    if DEV_NO_LOGIN:
+        session['uid']=0
+        session['username']='Development Admin'
+        session['full_name']='Kredansh Development'
+        session['role']='Admin'
+
+DATE_FIELDS={
+    'agreement_date','date_of_birth','date_of_joining',
+    'allocation_date','ptp_date','collection_date','next_follow_up','visit_date',
+    'dm_order_date','confirmation_date','affiliation_date','possession_date',
+    'second_attempt_date','payment_date','closed_date'
+}
+NUMERIC_FIELDS={
+    'loan_amount','emi','overdue_amount','total_outstanding','ptp_amount',
+    'amount_collected','administrative_expense','recovery_amount',
+    'allocated_outstanding','allocated_overdue','collected_amount','amount'
+}
+
+def clean_date(v):
+    if v is None:return None
+    if isinstance(v,datetime.datetime):return v.date().isoformat()
+    if isinstance(v,datetime.date):return v.isoformat()
+    s=str(v).strip()
+    if not s:return None
+    # Excel / datetime strings such as 2026-03-18 00:00:00
+    if re.match(r'^\d{4}-\d{2}-\d{2}',s):return s[:10]
+    # Common DD.MM.YYYY / DD-MM-YYYY / DD/MM/YYYY
+    for fmt in ('%d.%m.%Y','%d-%m-%Y','%d/%m/%Y'):
+        try:return datetime.datetime.strptime(s,fmt).date().isoformat()
+        except:pass
+    return s
+
+def clean_number(v):
+    if v is None or str(v).strip()=='':return 0
+    try:return float(str(v).replace(',','').strip())
+    except:return 0
+
+def clean_db_value(field,v):
+    if field in DATE_FIELDS:return clean_date(v)
+    if field in NUMERIC_FIELDS:return clean_number(v)
+    s='' if v is None else str(v).strip()
+    return s
+
 
 def now(): return datetime.datetime.now().isoformat(timespec='seconds')
 def today(): return datetime.date.today().isoformat()
@@ -65,6 +113,34 @@ def init_db():
         "CREATE TABLE IF NOT EXISTS collection_ptp_ledger(id BIGSERIAL PRIMARY KEY,collection_case_id BIGINT,allocation_id BIGINT,ptp_date TEXT,ptp_amount DOUBLE PRECISION DEFAULT 0,outcome TEXT,remarks TEXT,employee_id BIGINT,created_at TEXT,created_by TEXT)"
         ]
         for s in stmts:c.execute(s)
+
+        # Supabase V1 tables already exist, so CREATE TABLE IF NOT EXISTS
+        # cannot add fields required by the web UI. Add them safely here.
+        alters=[
+            "ALTER TABLE banks ADD COLUMN IF NOT EXISTS address TEXT",
+            "ALTER TABLE banks ADD COLUMN IF NOT EXISTS office_address TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS alternate_mobile TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_joining DATE",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS blood_group TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS emergency_contact TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS address TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS aadhaar_number TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS pan_number TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS driving_licence_number TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS bank_name TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS bank_account TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS ifsc TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS reporting_manager TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS photo_path TEXT",
+            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS remarks TEXT",
+            "ALTER TABLE collection_cases ADD COLUMN IF NOT EXISTS visit_status TEXT",
+            "ALTER TABLE collection_cases ADD COLUMN IF NOT EXISTS visit_date DATE"
+        ]
+        for s in alters:
+            try:c.execute(s)
+            except Exception:
+                c.rollback()
     row=c.execute('select count(*) c from users').fetchone(); count=row['c']
     if not count:c.execute('insert into users(username,password,full_name,role,status) values(?,?,?,?,?)',('admin',generate_password_hash('admin123'),'Administrator','Admin','Active'))
     c.commit();c.close()
@@ -93,13 +169,19 @@ def migrate_seed():
 def auth(fn):
     @wraps(fn)
     def w(*a,**k):
-        if not session.get('uid'):return redirect(url_for('login',next=request.path))
+        if DEV_NO_LOGIN:
+            return fn(*a,**k)
+        if not session.get('uid'):
+            return redirect(url_for('login',next=request.path))
         return fn(*a,**k)
     return w
 def mgr(fn):
     @wraps(fn)
     def w(*a,**k):
-        if session.get('role') not in ('Admin','Manager'):abort(403)
+        if DEV_NO_LOGIN:
+            return fn(*a,**k)
+        if session.get('role') not in ('Admin','Manager'):
+            abort(403)
         return fn(*a,**k)
     return w
 def log(module,rid,action,details=''):
@@ -108,9 +190,9 @@ def log(module,rid,action,details=''):
 def context():return dict(money=money)
 
 @app.route('/healthz')
-def healthz():return {'status':'ok','app':'Kredansh Capital Online ERP'}
+def healthz():return {'status':'ok','app':'Kredansh Capital Online ERP','build':APP_BUILD}
 @app.route('/system/health')
-def syshealth():return {'ok':True,'postgres':IS_POSTGRES}
+def syshealth():return {'ok':True,'postgres':IS_POSTGRES,'build':APP_BUILD}
 @app.route('/manifest.webmanifest')
 def manifest():return app.response_class(json.dumps({'name':'KREDANSH CAPITAL ERP','short_name':'KREDANSH','start_url':'/','scope':'/','display':'standalone','background_color':'#07111f','theme_color':'#07111f','icons':[{'src':'/static/pwa/icon-192.png','sizes':'192x192','type':'image/png'},{'src':'/static/pwa/icon-512.png','sizes':'512x512','type':'image/png'}]}),mimetype='application/manifest+json')
 @app.route('/service-worker.js')
@@ -119,6 +201,8 @@ def worker():
 
 @app.route('/login',methods=['GET','POST'])
 def login():
+    if DEV_NO_LOGIN:
+        return redirect('/')
     if request.method=='POST':
         u=request.form.get('username','').strip();p=request.form.get('password','');c=db();r=c.execute('select * from users where username=?',(u,)).fetchone()
         if r and r['status']!='Inactive':
@@ -130,7 +214,11 @@ def login():
         c.close();flash('Invalid Login ID or Password','danger')
     return render_template('login.html')
 @app.route('/logout')
-def logout():session.clear();return redirect('/login')
+def logout():
+    if DEV_NO_LOGIN:
+        return redirect('/')
+    session.clear()
+    return redirect('/login')
 
 @app.route('/')
 @auth
@@ -139,7 +227,7 @@ def dashboard():
     def sc(q,p=()):return c.execute(q,p).fetchone()['c']
     k={'Banks':sc("select count(*) c from banks where coalesce(status,'Active')='Active'"),'Employees':sc("select count(*) c from employees where coalesce(status,'Active')='Active'"),'Collection Cases':sc('select count(*) c from collection_cases'),'Enforcement Cases':sc('select count(*) c from enforcement_cases'),'PTP Today':sc('select count(*) c from collection_cases where ptp_date=?',(today(),)),'Possession Today':sc('select count(*) c from enforcement_cases where possession_date=?',(today(),)),'Follow-ups Today':sc('select (select count(*) from collection_cases where next_follow_up=?)+(select count(*) from enforcement_cases where next_follow_up=?) c',(today(),today()))}
     out=c.execute('select coalesce(sum(total_outstanding),0) c from collection_cases').fetchone()['c'];collected=c.execute('select coalesce(sum(amount_collected),0) c from collection_cases').fetchone()['c'];k['Outstanding']=out;k['Collected']=collected
-    enf=c.execute("select b.bank_name,count(e.id) total,sum(case when e.possession_date is not null and e.possession_date<>'' then 1 else 0 end) possession_date,sum(case when e.status='Chaspa Affixed' then 1 else 0 end) chaspa,sum(case when e.status='Settled' then 1 else 0 end) settled,sum(case when e.status='Possession Done' then 1 else 0 end) possession_done,sum(case when e.status='Rescheduled' then 1 else 0 end) rescheduled,sum(case when e.status='Hold by Bank' then 1 else 0 end) hold_bank,sum(case when e.status='DM Order Pending' then 1 else 0 end) dm_pending,sum(case when e.status='Regularized' then 1 else 0 end) regularized,sum(case when e.status='Cancelled' then 1 else 0 end) cancelled from banks b left join enforcement_cases e on e.bank_id=b.id group by b.id,b.bank_name order by b.bank_name").fetchall()
+    enf=c.execute("select b.bank_name,count(e.id) total,sum(case when e.possession_date is not null then 1 else 0 end) possession_date,sum(case when e.status='Chaspa Affixed' then 1 else 0 end) chaspa,sum(case when e.status='Settled' then 1 else 0 end) settled,sum(case when e.status='Possession Done' then 1 else 0 end) possession_done,sum(case when e.status='Rescheduled' then 1 else 0 end) rescheduled,sum(case when e.status='Hold by Bank' then 1 else 0 end) hold_bank,sum(case when e.status='DM Order Pending' then 1 else 0 end) dm_pending,sum(case when e.status='Regularized' then 1 else 0 end) regularized,sum(case when e.status='Cancelled' then 1 else 0 end) cancelled from banks b left join enforcement_cases e on e.bank_id=b.id group by b.id,b.bank_name order by b.bank_name").fetchall()
     col=c.execute("select b.bank_name,count(x.id) total,coalesce(sum(x.total_outstanding),0) outstanding,coalesce(sum(x.amount_collected),0) collected,sum(case when x.status='Pending' then 1 else 0 end) pending,sum(case when x.status='PTP' then 1 else 0 end) ptp,sum(case when x.status='Broken PTP' then 1 else 0 end) broken_ptp,sum(case when x.status='Part Paid' then 1 else 0 end) part_paid,sum(case when x.status='Paid' then 1 else 0 end) paid,sum(case when x.status='Closed' then 1 else 0 end) closed from banks b left join collection_cases x on x.bank_id=b.id group by b.id,b.bank_name order by b.bank_name").fetchall();c.close();return render_template('dashboard.html',k=k,enf=enf,col=col)
 
 @app.route('/cases/<module>')
@@ -164,7 +252,25 @@ def detail(module,rid):
 @app.route('/case/<module>/<int:rid>/save',methods=['POST'])
 @auth
 def save_case(module,rid):
-    t='collection_cases' if module=='collection' else 'enforcement_cases';fields=['status','next_follow_up','remarks','mobile','district','employee_id']+(['ptp_date','ptp_amount','amount_collected','collection_date','visit_status','visit_date'] if module=='collection' else ['dm_order_status','dm_order_date','duty_magistrate','field_officer','confirmation_date','affiliation_date','possession_date','second_attempt_date','cost_approval_status','administrative_expense','recovery_amount']);d={f:request.form.get(f,'').strip() for f in fields};d['employee_id']=d['employee_id'] or None;c=db();c.execute(f"update {t} set "+','.join(f'{f}=?' for f in fields)+',updated_at=? where id=?',list(d.values())+[now(),rid]);c.commit();c.close();log(module,rid,'Case Updated',f"Status {d['status']}");flash('Case updated successfully','success');return redirect(url_for('detail',module=module,rid=rid))
+    t='collection_cases' if module=='collection' else 'enforcement_cases'
+    fields=['status','next_follow_up','remarks','mobile','district','employee_id']+(
+        ['ptp_date','ptp_amount','amount_collected','collection_date','visit_status','visit_date']
+        if module=='collection' else
+        ['dm_order_status','dm_order_date','duty_magistrate','field_officer','confirmation_date',
+         'affiliation_date','possession_date','second_attempt_date','cost_approval_status',
+         'administrative_expense','recovery_amount']
+    )
+    d={f:clean_db_value(f,request.form.get(f,'')) for f in fields}
+    d['employee_id']=request.form.get('employee_id') or None
+    c=db()
+    c.execute(
+        f"update {t} set "+','.join(f'{f}=?' for f in fields)+',updated_at=? where id=?',
+        [d[f] for f in fields]+[now(),rid]
+    )
+    c.commit();c.close()
+    log(module,rid,'Case Updated',f"Status {d['status']}")
+    flash('Case updated successfully','success')
+    return redirect(url_for('detail',module=module,rid=rid))
 @app.route('/cases/<module>/bulk',methods=['POST'])
 @auth
 def bulk(module):
@@ -172,16 +278,16 @@ def bulk(module):
     for rid in ids:
         if action=='status':c.execute(f'update {t} set status=?,updated_at=? where id=?',(request.form.get('status'),now(),rid))
         elif action=='allocate':c.execute(f'update {t} set employee_id=?,allocation_date=?,updated_at=? where id=?',(request.form.get('employee_id') or None,today(),now(),rid))
-        elif action=='delete' and session.get('role') in ('Admin','Manager'):c.execute(f'delete from {t} where id=?',(rid,))
+        elif action=='delete' and (DEV_NO_LOGIN or session.get('role') in ('Admin','Manager')):c.execute(f'delete from {t} where id=?',(rid,))
     c.commit();c.close();flash(f'{len(ids)} case(s) processed','success');return redirect(url_for('cases',module=module))
 
 @app.route('/collection/<int:rid>/ledger/<kind>',methods=['POST'])
 @auth
 def ledger(rid,kind):
     c=db()
-    if kind=='payment':c.execute('insert into collection_payments(collection_case_id,payment_date,amount,payment_mode,receipt_number,remarks,created_at,created_by) values(?,?,?,?,?,?,?,?)',(rid,request.form.get('date'),request.form.get('amount') or 0,request.form.get('mode'),request.form.get('receipt'),request.form.get('remarks'),now(),session.get('username')))
-    elif kind=='ptp':c.execute('insert into collection_ptp_ledger(collection_case_id,ptp_date,ptp_amount,outcome,remarks,created_at,created_by) values(?,?,?,?,?,?,?)',(rid,request.form.get('date'),request.form.get('amount') or 0,request.form.get('outcome'),request.form.get('remarks'),now(),session.get('username')))
-    elif kind=='visit':c.execute('insert into collection_visits(collection_case_id,visit_date,visit_result,person_met,remarks,created_at,created_by) values(?,?,?,?,?,?,?)',(rid,request.form.get('date'),request.form.get('result'),request.form.get('person_met'),request.form.get('remarks'),now(),session.get('username')))
+    if kind=='payment':c.execute('insert into collection_payments(collection_case_id,payment_date,amount,payment_mode,receipt_number,remarks,created_at,created_by) values(?,?,?,?,?,?,?,?)',(rid,clean_date(request.form.get('date')),clean_number(request.form.get('amount')),request.form.get('mode'),request.form.get('receipt'),request.form.get('remarks'),now(),session.get('username')))
+    elif kind=='ptp':c.execute('insert into collection_ptp_ledger(collection_case_id,ptp_date,ptp_amount,outcome,remarks,created_at,created_by) values(?,?,?,?,?,?,?)',(rid,clean_date(request.form.get('date')),clean_number(request.form.get('amount')),request.form.get('outcome'),request.form.get('remarks'),now(),session.get('username')))
+    elif kind=='visit':c.execute('insert into collection_visits(collection_case_id,visit_date,visit_result,person_met,remarks,created_at,created_by) values(?,?,?,?,?,?,?)',(rid,clean_date(request.form.get('date')),request.form.get('result'),request.form.get('person_met'),request.form.get('remarks'),now(),session.get('username')))
     c.commit();c.close();log('collection',rid,kind.title()+' Added');return redirect(url_for('detail',module='collection',rid=rid))
 
 ALIASES={'collection':{'loan_number':['loan number','loan no','lan'],'customer_name':['customer name','borrower name'],'area':['area'],'district':['district'],'mobile':['mobile','mob no'],'loan_amount':['loan amount'],'emi':['emi'],'overdue_amount':['overdue amount'],'total_outstanding':['total outstanding'],'present_address':['present address'],'permanent_address':['permanent address'],'status':['status'],'remarks':['remarks']},'enforcement':{'case_number':['case number','case no'],'loan_number':['loan number','loan no','lan'],'borrower_name':['borrower name','customer name'],'village_city':['village','city'],'tehsil':['tehsil'],'district':['district'],'mobile':['mobile','mob no'],'bank_authorised_officer':['bank authorised officer'],'dm_order_status':['dm order status','dm orders'],'duty_magistrate':['duty magistrate'],'field_officer':['field officer'],'confirmation_date':['confirmation date','date of confirmation'],'affiliation_date':['affiliation date'],'cost_approval_status':['cost approval'],'administrative_expense':['administrative expense'],'possession_date':['possession date','date of possession'],'status':['status','possession status'],'remarks':['remarks']}}
@@ -205,7 +311,8 @@ def import_cases(module):
         if any(k not in mp for k in req):raise ValueError('Required Loan Number/Borrower columns missing')
         t='collection_cases' if module=='collection' else 'enforcement_cases';c=db();added=updated=skipped=0
         for row in rows[best+1:]:
-            d={k:(str(row[i]).strip() if i<len(row) and row[i] is not None else '') for k,i in mp.items()}
+            d={k:(row[i] if i<len(row) else None) for k,i in mp.items()}
+            d={k:clean_db_value(k,v) for k,v in d.items()}
             if not any(d.values()):continue
             if any(not d.get(k) for k in req):skipped+=1;continue
             if module=='enforcement':d['case_number']=d.get('case_number') or d['loan_number']
@@ -222,7 +329,7 @@ def import_cases(module):
 def export_cases(module):
     t='collection_cases' if module=='collection' else 'enforcement_cases';c=db();rows=c.execute(f'select * from {t} order by id desc').fetchall();c.close();out=io.StringIO();w=csv.writer(out);keys=list(rows[0].keys()) if rows else [];w.writerow(keys);[w.writerow([r[k] for k in keys]) for r in rows];return send_file(io.BytesIO(out.getvalue().encode('utf-8-sig')),mimetype='text/csv',as_attachment=True,download_name=f'Kredansh_{module}.csv')
 
-MASTERS={'banks':['bank_name','contact_person','mobile','email','address','empanelment_no','agreement_date','status','remarks'],'employees':['employee_code','employee_name','designation','mobile','alternate_mobile','email','branch','area','district','department','status','date_of_joining','reporting_manager','remarks'],'directory':['state','district','tehsil','sub_tehsil','tehsildar_name','tehsildar_contact','reader_name','reader_contact','police_station_name','sho_name','sho_contact','police_station_contact','office_address','email','status','remarks']}
+MASTERS={'banks':['bank_name','contact_person','mobile','email','office_address','empanelment_no','agreement_date','status','remarks'],'employees':['employee_code','employee_name','designation','mobile','alternate_mobile','email','branch','area','district','department','status','date_of_joining','reporting_manager','remarks'],'directory':['state','district','tehsil','sub_tehsil','tehsildar_name','tehsildar_contact','reader_name','reader_contact','police_station_name','sho_name','sho_contact','police_station_contact','office_address','email','status','remarks']}
 @app.route('/master/<name>')
 @auth
 def master(name):
@@ -232,10 +339,15 @@ def master(name):
 @auth
 @mgr
 def master_save(name):
-    table='tehsil_police_contacts' if name=='directory' else name;fields=MASTERS[name];rid=request.form.get('id');vals=[request.form.get(f,'') for f in fields];c=db()
+    table='tehsil_police_contacts' if name=='directory' else name
+    fields=MASTERS[name]
+    rid=request.form.get('id')
+    vals=[clean_db_value(f,request.form.get(f,'')) for f in fields]
+    c=db()
     if rid:c.execute(f"update {table} set "+','.join(f'{f}=?' for f in fields)+' where id=?',vals+[rid])
     else:c.execute(f"insert into {table}({','.join(fields)}) values({','.join('?' for _ in fields)})",vals)
-    c.commit();c.close();return redirect(url_for('master',name=name))
+    c.commit();c.close()
+    return redirect(url_for('master',name=name))
 
 @app.route('/case/<module>/<int:rid>/documents',methods=['GET','POST'])
 @auth
